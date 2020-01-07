@@ -4,7 +4,7 @@ from __future__ import division
 import time
 import argparse
 import numpy as np
-import cPickle as pickle
+import pickle
 from collections import Counter
 
 
@@ -23,6 +23,186 @@ def entropy_spatial(sessions):
     entropy = - np.sum(frequency * np.log(frequency))
     return entropy
 
+class Gowalla():
+    ''' processes our gowalla like datasets in order to be compatible with deep move '''
+        
+    def __init__(self, filename, min_checkins, max_users, train_split=0.8):
+        self.filename = filename
+        self.min_checkins = min_checkins
+        self.max_users = max_users
+        self.train_split = train_split
+        
+        # default parameters for session organization:
+        self.hour_gap = 72
+        self.session_max = 10
+        
+        # storage:
+        self.user2id = {}
+        self.poi2id = {'unk': 0}
+        
+        self.users = []
+        self.times = []
+        self.locs = []
+        
+        # user sessions:
+        self.sessions = {}
+        self.data_neural = {}
+        
+        
+    def run(self):
+        print('process users')
+        self.load_users()
+        print('process pois')
+        self.load_pois()
+        print('create sequences')
+        self.create_sequences()
+        print('persist')
+        self.do_train_split()
+        self.save()
+        print('done!')
+    
+    def load_users(self):
+        f = open('../../dataset/{}'.format(self.filename), 'r')
+        lines = f.readlines()    
+        prev_user = int(lines[0].split('\t')[0])
+        visit_cnt = 0
+        for i, line in enumerate(lines):
+            tokens = line.strip().split('\t')
+            user = int(tokens[0])
+            if user == prev_user:
+                visit_cnt += 1
+            else:
+                if visit_cnt >= self.min_checkins:
+                    self.user2id[prev_user] = len(self.user2id)
+                prev_user = user
+                visit_cnt = 1
+                if self.max_users > 0 and len(self.user2id) >= self.max_users:
+                    break # restrict to max users
+    
+    def load_pois(self):
+        f = open('../../dataset/{}'.format(self.filename), 'r')
+        lines = f.readlines()
+        
+        # store location ids
+        user_time = []
+        user_loc = []
+        
+        prev_user = int(lines[0].split('\t')[0])
+        prev_user = self.user2id.get(prev_user)
+        for i, line in enumerate(lines):
+            tokens = line.strip().split('\t')
+            user = int(tokens[0])
+            if self.user2id.get(user) is None:
+                continue # user is not of interrest
+            user = self.user2id.get(user)            
+            tim = time.strptime(tokens[1], "%Y-%m-%dT%H:%M:%SZ")
+            location = int(tokens[4]) # location nr
+            if self.poi2id.get(location) is None: # get-or-set locations
+                self.poi2id[location] = len(self.poi2id)
+            location = self.poi2id.get(location)
+    
+            if user == prev_user:
+                # insert in front!
+                user_time.insert(0, tim)
+                user_loc.insert(0, location)
+            else:
+                self.users.append(prev_user)
+                self.times.append(user_time)
+                self.locs.append(user_loc)
+                
+                # resart:
+                prev_user = user 
+                user_time = [tim]
+                user_loc = [location] 
+                
+        # process also the latest user in the for loop
+        self.users.append(prev_user)
+        self.times.append(user_time)
+        self.locs.append(user_loc)
+        
+    def create_sequences(self):
+        # prepare sequences until hour gap or max value:
+        for u in self.users:
+            sessions = {}
+            last_time = 0
+            for i, record in enumerate(zip(self.locs[u], self.times[u])):
+                loc, tim = record
+                curr_time = int(time.mktime(tim))
+                sid = len(sessions) # next session id
+                if i == 0 or len(sessions) == 0:
+                    sessions[sid] = [record]
+                else:
+                    if (curr_time - last_time) / 3600 > self.hour_gap or len(sessions[sid - 1]) > self.session_max:
+                        # create new session: if hour gap too large or max reached
+                        sessions[sid] = [record]
+                    else:
+                        # do not reject any checkins (enforce same dataset)
+                        sessions[sid-1].append(record)
+                    #elif (tid - last_tid) / 60 > self.min_gap:
+                    #    # append to current session
+                    #    sessions[sid - 1].append(record)
+                    #else:
+                    #    # ignore this check in
+                    #    pass
+                last_time = curr_time
+            # append sessions with more than 2 entries::
+            self.sessions[u] = {}
+            for i in sessions:
+                if len(sessions[i]) >= 2: # we can not work with smaller
+                    self.sessions[u][i] = sessions[i]
+    
+    @staticmethod
+    def tid_list_gowalla(tm):
+        tid = tm.tm_wday * 24 + tm.tm_hour
+        return tid
+
+    @staticmethod
+    def tid_list_48_gowalla(tm):
+        if tm.tm_wday in [0, 1, 2, 3, 4]:
+            tid = tm.tm_hour
+        else:
+            tid = tm.tm_hour + 24
+        return tid            
+    
+    def do_train_split(self):
+        for u in self.users:
+            sessions = self.sessions[u]
+            sessions_tran = {}
+            sessions_id = []
+            for sid in sessions:
+                sessions_tran[sid] = [[record[0], self.tid_list_48_gowalla(record[1])] for record in sessions[sid]]
+                sessions_id.append(sid)
+            split_id = int(np.floor(self.train_split * len(sessions_id)))
+            train_id = sessions_id[:split_id]
+            test_id = sessions_id[split_id:]
+            self.data_neural[u] = {'sessions': sessions_tran,\
+                            'train': train_id,\
+                            'test': test_id}
+    
+    def save(self):
+        gowalla_dataset = {'data_neural': self.data_neural,\
+                           'vid_list': self.poi2id,\
+                           'uid_list': self.user2id}
+        pickle.dump(gowalla_dataset, open('../data/deepmove_{}.pk'.format(self.filename), 'wb'))
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--users', default=6, type=int, help='users to process')
+    parser.add_argument('--min-checkins', default=101, type=int, help='amount of checkins required')
+    parser.add_argument('--dataset', default='loc-gowalla_totalCheckins.txt', type=str, help='the dataset under ../../dataset/<dataset.txt> to load')
+    return parser.parse_args()
+
+if __name__ == '__main__':
+    args = parse_args()
+    data_generator = Gowalla(args.dataset, args.min_checkins, args.users)        
+    data_generator.run()
+
+
+
+##################################################################333
+    
+    
+### THEIR foursquare processor:
 
 class DataFoursquare(object):
     def __init__(self, trace_min=10, global_visit=10, hour_gap=72, min_gap=10, session_min=2, session_max=10,
@@ -103,10 +283,13 @@ class DataFoursquare(object):
                     sessions[sid] = [record]
                 else:
                     if (tid - last_tid) / 3600 > self.hour_gap or len(sessions[sid - 1]) > self.session_max:
+                        # create new session: if hour gap too large or max reached
                         sessions[sid] = [record]
                     elif (tid - last_tid) / 60 > self.min_gap:
+                        # append to current session
                         sessions[sid - 1].append(record)
                     else:
+                        # ignore this check in
                         pass
                 last_tid = tid
             sessions_filter = {}
@@ -243,8 +426,7 @@ class DataFoursquare(object):
                               'vid_lookup': self.vid_lookup}
         pickle.dump(foursquare_dataset, open(self.SAVE_PATH + self.save_name + '.pk', 'wb'))
 
-
-def parse_args():
+def parse_args_deepmove():
     parser = argparse.ArgumentParser()
     parser.add_argument('--trace_min', type=int, default=10, help="raw trace length filter threshold")
     parser.add_argument('--global_visit', type=int, default=10, help="location global visit threshold")
@@ -256,9 +438,10 @@ def parse_args():
     parser.add_argument('--train_split', type=float, default=0.8, help="train/test ratio")
     return parser.parse_args()
 
+'''
 
 if __name__ == '__main__':
-    args = parse_args()
+    args = parse_args_deepmove()
     data_generator = DataFoursquare(trace_min=args.trace_min, global_visit=args.global_visit,
                                     hour_gap=args.hour_gap, min_gap=args.min_gap,
                                     session_min=args.session_min, session_max=args.session_max,
@@ -282,3 +465,4 @@ if __name__ == '__main__':
         len(data_generator.data), len(data_generator.venues)))
     print('final users:{} final locations:{}'.format(
         len(data_generator.data_neural), len(data_generator.vid_list)))
+# '''

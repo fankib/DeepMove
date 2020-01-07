@@ -1,16 +1,34 @@
-# DeepMove
+# DeepMove adaptation four own datasets
+## how to use:
+Preprocess the datasets with:
+```
+[codes]$ python sparse_trace.py <dataset, min-ceckins, max-users>
+```
+The preprocessing creates a unique file for each dataset.
+
+Run the training using `main.py`:
+```
+[codes]$ python main.py <gpu, dataset, stuff>
+```
+
+
+
+
+# Original description
+
+## DeepMove
 PyTorch implementation of WWW'18  paper-DeepMove: Predicting Human Mobility with Attentional Recurrent Networks [link](https://dl.acm.org/citation.cfm?id=3178876.3186058)
 
-# Datasets
+## Datasets
 The sample data to evaluate our model can be found in the data folder, which contains 800+ users and ready for directly used. The raw mobility data similar to ours used in the paper can be found in this public [link](https://sites.google.com/site/yangdingqi/home/foursquare-dataset).
 
-# Requirements
+## Requirements
 - Python 2.7
 - [Pytorch](https://pytorch.org/previous-versions/) 0.20
 
 cPickle is used in the project to store the preprocessed data and parameters. While appearing some warnings, pytorch 0.3.0 can also be used.
 
-# Project Structure
+## Project Structure
 - /codes
     - [main.py](https://github.com/vonfeng/DeepMove/blob/master/codes/main.py)
     - [model.py](https://github.com/vonfeng/DeepMove/blob/master/codes/model.py) # define models
@@ -28,7 +46,7 @@ cPickle is used in the project to store the preprocessed data and parameters. Wh
 - /docs # paper and presentation file
 - /resutls # the default save path when training the model
 
-# Usage
+## Usage
 1. Load a pretrained model:
 > ```python
 > python main.py --model_mode=attn_avg_long_user --pretrain=1

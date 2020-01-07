@@ -6,7 +6,8 @@ import torch
 from torch.autograd import Variable
 
 import numpy as np
-import cPickle as pickle
+#import cPickle as pickle
+import pickle
 from collections import deque, Counter
 
 
@@ -14,11 +15,11 @@ class RnnParameterData(object):
     def __init__(self, loc_emb_size=500, uid_emb_size=40, voc_emb_size=50, tim_emb_size=10, hidden_size=500,
                  lr=1e-3, lr_step=3, lr_decay=0.1, dropout_p=0.5, L2=1e-5, clip=5.0, optim='Adam',
                  history_mode='avg', attn_type='dot', epoch_max=30, rnn_type='LSTM', model_mode="simple",
-                 data_path='../data/', save_path='../results/', data_name='foursquare'):
+                 data_path='../data/', save_path='../results/', dataset='blub.pk', device=None):
         self.data_path = data_path
         self.save_path = save_path
-        self.data_name = data_name
-        data = pickle.load(open(self.data_path + self.data_name + '.pk', 'rb'))
+        self.dataset = dataset
+        data = pickle.load(open('{}deepmove_{}.pk'.format(self.data_path,self.dataset), 'rb'))
         self.vid_list = data['vid_list']
         self.uid_list = data['uid_list']
         self.data_neural = data['data_neural']
@@ -34,7 +35,8 @@ class RnnParameterData(object):
 
         self.epoch = epoch_max
         self.dropout_p = dropout_p
-        self.use_cuda = True
+        self.use_cuda = (not device.type == 'cpu')
+        self.device = device
         self.lr = lr
         self.lr_step = lr_step
         self.lr_decay = lr_decay
@@ -218,6 +220,9 @@ def generate_input_long_history(data_neural, mode, candidate=None):
 def generate_queue(train_idx, mode, mode2):
     """return a deque. You must use it by train_queue.popleft()"""
     user = train_idx.keys()
+    user_lst = []
+    for u in user:
+        user_lst.append(u)
     train_queue = deque()
     if mode == 'random':
         initial_queue = {}
@@ -228,8 +233,9 @@ def generate_queue(train_idx, mode, mode2):
                 initial_queue[u] = deque(train_idx[u])
         queue_left = 1
         while queue_left > 0:
-            np.random.shuffle(user)
-            for j, u in enumerate(user):
+
+            np.random.shuffle(user_lst)
+            for j, u in enumerate(user_lst):
                 if len(initial_queue[u]) > 0:
                     train_queue.append((u, initial_queue[u].popleft()))
                 if j >= int(0.01 * len(user)):
@@ -258,6 +264,18 @@ def get_acc(target, scores):
             acc[2] += 1
     return acc
 
+def get_map(target, scores):
+    ''' compute MAP '''
+    target = target.cpu().numpy()
+    scores = scores.cpu().detach().numpy()
+    total_precision = 0
+    for i, t in enumerate(target):
+        s_i = scores[i]
+        t_val = s_i[t]
+        upper = np.where(s_i > t_val)[0]
+        precision = 1. / (1+len(upper))
+        total_precision += precision
+    return total_precision
 
 def get_hint(target, scores, users_visited):
     """target and scores are torch cuda Variable"""
@@ -282,7 +300,7 @@ def get_hint(target, scores, users_visited):
     return hint, count
 
 
-def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, mode2=None):
+def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, device, mode2=None):
     """mode=train: return model, avg_loss
        mode=test: return avg_loss,avg_acc,users_rnn_acc"""
     run_queue = None
@@ -300,15 +318,15 @@ def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, mode2
         optimizer.zero_grad()
         u, i = run_queue.popleft()
         if u not in users_acc:
-            users_acc[u] = [0, 0]
-        loc = data[u][i]['loc'].cuda()
-        tim = data[u][i]['tim'].cuda()
-        target = data[u][i]['target'].cuda()
-        uid = Variable(torch.LongTensor([u])).cuda()
+            users_acc[u] = [0, 0, 0]
+        loc = data[u][i]['loc'].to(device)
+        tim = data[u][i]['tim'].to(device)
+        target = data[u][i]['target'].to(device)
+        uid = Variable(torch.LongTensor([u])).to(device)
 
         if 'attn' in mode2:
-            history_loc = data[u][i]['history_loc'].cuda()
-            history_tim = data[u][i]['history_tim'].cuda()
+            history_loc = data[u][i]['history_loc'].to(device)
+            history_tim = data[u][i]['history_tim'].to(device)
 
         if mode2 in ['simple', 'simple_long']:
             scores = model(loc, tim)
@@ -317,6 +335,8 @@ def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, mode2
             target_len = target.data.size()[0]
             scores = model(loc, tim, history_loc, history_tim, history_count, uid, target_len)
         elif mode2 == 'attn_local_long':
+            if (u == 4 and i == 13):
+                print('user and i:', u, i)    
             target_len = target.data.size()[0]
             scores = model(loc, tim, target_len)
 
@@ -339,18 +359,24 @@ def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, mode2
             users_acc[u][0] += len(target)
             acc = get_acc(target, scores)
             users_acc[u][1] += acc[2]
-        total_loss.append(loss.data.cpu().numpy()[0])
+            u_map = get_map(target, scores)
+            users_acc[u][2] += u_map            
+        total_loss.append(loss.cpu().item())
 
     avg_loss = np.mean(total_loss, dtype=np.float64)
     if mode == 'train':
         return model, avg_loss
     elif mode == 'test':
         users_rnn_acc = {}
+        users_rnn_map = {}
         for u in users_acc:
             tmp_acc = users_acc[u][1] / users_acc[u][0]
+            tmp_map = users_acc[u][2] / users_acc[u][0]
             users_rnn_acc[u] = tmp_acc.tolist()[0]
+            users_rnn_map[u] = tmp_map
         avg_acc = np.mean([users_rnn_acc[x] for x in users_rnn_acc])
-        return avg_loss, avg_acc, users_rnn_acc
+        avg_map = np.mean([users_rnn_map[x] for x in users_rnn_map])
+        return avg_loss, avg_acc, avg_map, users_rnn_acc
 
 
 def markov(parameters, candidate):

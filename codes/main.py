@@ -24,14 +24,14 @@ def run(args):
     parameters = RnnParameterData(loc_emb_size=args.loc_emb_size, uid_emb_size=args.uid_emb_size,
                                   voc_emb_size=args.voc_emb_size, tim_emb_size=args.tim_emb_size,
                                   hidden_size=args.hidden_size, dropout_p=args.dropout_p,
-                                  data_name=args.data_name, lr=args.learning_rate,
+                                  dataset=args.dataset, lr=args.learning_rate,
                                   lr_step=args.lr_step, lr_decay=args.lr_decay, L2=args.L2, rnn_type=args.rnn_type,
                                   optim=args.optim, attn_type=args.attn_type,
                                   clip=args.clip, epoch_max=args.epoch_max, history_mode=args.history_mode,
-                                  model_mode=args.model_mode, data_path=args.data_path, save_path=args.save_path)
+                                  model_mode=args.model_mode, data_path=args.data_path, save_path=args.save_path, device=args.device)
     argv = {'loc_emb_size': args.loc_emb_size, 'uid_emb_size': args.uid_emb_size, 'voc_emb_size': args.voc_emb_size,
             'tim_emb_size': args.tim_emb_size, 'hidden_size': args.hidden_size,
-            'dropout_p': args.dropout_p, 'data_name': args.data_name, 'learning_rate': args.learning_rate,
+            'dropout_p': args.dropout_p, 'dataset': args.dataset, 'learning_rate': args.learning_rate,
             'lr_step': args.lr_step, 'lr_decay': args.lr_decay, 'L2': args.L2, 'act_type': 'selu',
             'optim': args.optim, 'attn_type': args.attn_type, 'clip': args.clip, 'rnn_type': args.rnn_type,
             'epoch_max': args.epoch_max, 'history_mode': args.history_mode, 'model_mode': args.model_mode}
@@ -40,11 +40,11 @@ def run(args):
         parameters.model_mode, parameters.history_mode, parameters.uid_size))
 
     if parameters.model_mode in ['simple', 'simple_long']:
-        model = TrajPreSimple(parameters=parameters).cuda()
+        model = TrajPreSimple(parameters=parameters).to(args.device)
     elif parameters.model_mode == 'attn_avg_long_user':
-        model = TrajPreAttnAvgLongUser(parameters=parameters).cuda()
+        model = TrajPreAttnAvgLongUser(parameters=parameters).to(args.device)
     elif parameters.model_mode == 'attn_local_long':
-        model = TrajPreLocalAttnLong(parameters=parameters).cuda()
+        model = TrajPreLocalAttnLong(parameters=parameters).to(args.device)
     if args.pretrain == 1:
         model.load_state_dict(torch.load("../pretrain/" + args.model_mode + "/res.m"))
 
@@ -55,18 +55,17 @@ def run(args):
     else:
         parameters.history_mode = 'whole'
 
-    criterion = nn.NLLLoss().cuda()
+    criterion = nn.NLLLoss().to(args.device)
     optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=parameters.lr,
                            weight_decay=parameters.L2)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=parameters.lr_step,
-                                                     factor=parameters.lr_decay, threshold=1e-3)
+    #scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'max', patience=parameters.lr_step, factor=parameters.lr_decay, threshold=1e-3)
 
     lr = parameters.lr
     metrics = {'train_loss': [], 'valid_loss': [], 'accuracy': [], 'valid_acc': {}}
 
     candidate = parameters.data_neural.keys()
-    avg_acc_markov, users_acc_markov = markov(parameters, candidate)
-    metrics['markov_acc'] = users_acc_markov
+    #avg_acc_markov, users_acc_markov = markov(parameters, candidate)
+    #metrics['markov_acc'] = users_acc_markov
 
     if 'long' in parameters.model_mode:
         long_history = True
@@ -86,23 +85,25 @@ def run(args):
             data_train, train_idx = generate_input_long_history(parameters.data_neural, 'train', candidate=candidate)
             data_test, test_idx = generate_input_long_history(parameters.data_neural, 'test', candidate=candidate)
 
-    print('users:{} markov:{} train:{} test:{}'.format(len(candidate), avg_acc_markov,
-                                                       len([y for x in train_idx for y in train_idx[x]]),
-                                                       len([y for x in test_idx for y in test_idx[x]])))
+    print('users:{} train:{} test:{}'.format(len(candidate),len([y for x in train_idx for y in train_idx[x]]),len([y for x in test_idx for y in test_idx[x]])))
     SAVE_PATH = args.save_path
     tmp_path = 'checkpoint/'
-    os.mkdir(SAVE_PATH + tmp_path)
+    try:
+        os.mkdir(SAVE_PATH + tmp_path)
+    except:
+        pass
+    
     for epoch in range(parameters.epoch):
         st = time.time()
         if args.pretrain == 0:
             model, avg_loss = run_simple(data_train, train_idx, 'train', lr, parameters.clip, model, optimizer,
-                                         criterion, parameters.model_mode)
+                                         criterion, args.device, parameters.model_mode)
             print('==>Train Epoch:{:0>2d} Loss:{:.4f} lr:{}'.format(epoch, avg_loss, lr))
             metrics['train_loss'].append(avg_loss)
 
-        avg_loss, avg_acc, users_acc = run_simple(data_test, test_idx, 'test', lr, parameters.clip, model,
-                                                  optimizer, criterion, parameters.model_mode)
-        print('==>Test Acc:{:.4f} Loss:{:.4f}'.format(avg_acc, avg_loss))
+        avg_loss, avg_acc, avg_map, users_acc = run_simple(data_test, test_idx, 'test', lr, parameters.clip, model,
+                                                  optimizer, criterion, args.device, parameters.model_mode)
+        print('==>Test recall@1:{:.8f}, Map:{:.8f}, Loss:{:.8f}'.format(avg_acc, avg_map, avg_loss))
 
         metrics['valid_loss'].append(avg_loss)
         metrics['accuracy'].append(avg_acc)
@@ -111,7 +112,8 @@ def run(args):
         save_name_tmp = 'ep_' + str(epoch) + '.m'
         torch.save(model.state_dict(), SAVE_PATH + tmp_path + save_name_tmp)
 
-        scheduler.step(avg_acc)
+        # no scheduler:
+        #scheduler.step(avg_acc)
         lr_last = lr
         lr = optimizer.param_groups[0]['lr']
         if lr_last > lr:
@@ -157,7 +159,7 @@ class Settings(object):
     def __init__(self, config, res):
         self.data_path = config.data_path
         self.save_path = config.save_path
-        self.data_name = res["data_name"]
+        self.dataset = res["dataset"]
         self.epoch_max = res["epoch_max"]
         self.learning_rate = res["learning_rate"]
         self.lr_step = res["lr_step"]
@@ -179,35 +181,42 @@ class Settings(object):
 
 
 if __name__ == '__main__':
-    np.random.seed(1)
-    torch.manual_seed(1)
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # random training:
+    #np.random.seed(1)
+    #torch.manual_seed(1)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--gpu', default=-1, type=int, help='the gpu to use')
     parser.add_argument('--loc_emb_size', type=int, default=500, help="location embeddings size")
     parser.add_argument('--uid_emb_size', type=int, default=40, help="user id embeddings size")
     parser.add_argument('--voc_emb_size', type=int, default=50, help="words embeddings size")
     parser.add_argument('--tim_emb_size', type=int, default=10, help="time embeddings size")
     parser.add_argument('--hidden_size', type=int, default=500)
-    parser.add_argument('--dropout_p', type=float, default=0.3)
-    parser.add_argument('--data_name', type=str, default='foursquare')
+    parser.add_argument('--dropout_p', type=float, default=0.0) # no dropout
+    parser.add_argument('--dataset', type=str, default='loc-gowalla_totalCheckins.txt')
     parser.add_argument('--learning_rate', type=float, default=5 * 1e-4)
+    #parser.add_argument('--learning_rate', type=float, default=0.001)
     parser.add_argument('--lr_step', type=int, default=2)
     parser.add_argument('--lr_decay', type=float, default=0.1)
     parser.add_argument('--optim', type=str, default='Adam', choices=['Adam', 'SGD'])
-    parser.add_argument('--L2', type=float, default=1 * 1e-5, help=" weight decay (L2 penalty)")
+    #parser.add_argument('--L2', type=float, default=1 * 1e-5, help=" weight decay (L2 penalty)")
+    parser.add_argument('--L2', type=float, default=0, help=" weight decay (L2 penalty)") # no decay
     parser.add_argument('--clip', type=float, default=5.0)
     parser.add_argument('--epoch_max', type=int, default=20)
     parser.add_argument('--history_mode', type=str, default='avg', choices=['max', 'avg', 'whole'])
-    parser.add_argument('--rnn_type', type=str, default='LSTM', choices=['LSTM', 'GRU', 'RNN'])
+    parser.add_argument('--rnn_type', type=str, default='GRU', choices=['LSTM', 'GRU', 'RNN']) # use GRU instead of LSTM
     parser.add_argument('--attn_type', type=str, default='dot', choices=['general', 'concat', 'dot'])
     parser.add_argument('--data_path', type=str, default='../data/')
     parser.add_argument('--save_path', type=str, default='../results/')
-    parser.add_argument('--model_mode', type=str, default='simple_long',
+    parser.add_argument('--model_mode', type=str, default='attn_local_long',
                         choices=['simple', 'simple_long', 'attn_avg_long_user', 'attn_local_long'])
-    parser.add_argument('--pretrain', type=int, default=1)
+    parser.add_argument('--pretrain', type=int, default=0)
     args = parser.parse_args()
     if args.pretrain == 1:
         args = load_pretrained_model(args)
+        
+    device = torch.device('cpu') if args.gpu == -1 else torch.device('cuda', args.gpu)
+    print('use', device)
+    args.device = device
 
     ours_acc = run(args)
