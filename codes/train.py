@@ -318,7 +318,7 @@ def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, devic
         optimizer.zero_grad()
         u, i = run_queue.popleft()
         if u not in users_acc:
-            users_acc[u] = [0, 0, 0]
+            users_acc[u] = [0, 0, 0, 0, 0] # number-of-targets, r@1, r@5, r@10, MAP
         loc = data[u][i]['loc'].to(device)
         tim = data[u][i]['tim'].to(device)
         target = data[u][i]['target'].to(device)
@@ -358,25 +358,35 @@ def run_simple(data, run_idx, mode, lr, clip, model, optimizer, criterion, devic
         elif mode == 'test':
             users_acc[u][0] += len(target)
             acc = get_acc(target, scores)
-            users_acc[u][1] += acc[2]
+            users_acc[u][1] += acc[2] # r@1
+            users_acc[u][2] += acc[1] # r@5
+            users_acc[u][3] += acc[0] # r@10
             u_map = get_map(target, scores)
-            users_acc[u][2] += u_map            
+            users_acc[u][4] += u_map            
         total_loss.append(loss.cpu().item())
 
     avg_loss = np.mean(total_loss, dtype=np.float64)
     if mode == 'train':
         return model, avg_loss
     elif mode == 'test':
-        users_rnn_acc = {}
+        users_rnn_acc_r1 = {}
+        users_rnn_acc_r5 = {}
+        users_rnn_acc_r10 = {}
         users_rnn_map = {}
         for u in users_acc:
-            tmp_acc = users_acc[u][1] / users_acc[u][0]
-            tmp_map = users_acc[u][2] / users_acc[u][0]
-            users_rnn_acc[u] = tmp_acc.tolist()[0]
+            tmp_acc_r1 = users_acc[u][1] / users_acc[u][0]
+            tmp_acc_r5 = users_acc[u][2] / users_acc[u][0]
+            tmp_acc_r10 = users_acc[u][3] / users_acc[u][0]
+            tmp_map = users_acc[u][4] / users_acc[u][0]
+            users_rnn_acc_r1[u] = tmp_acc_r1.tolist()[0]
+            users_rnn_acc_r5[u] = tmp_acc_r5.tolist()[0]
+            users_rnn_acc_r10[u] = tmp_acc_r10.tolist()[0]
             users_rnn_map[u] = tmp_map
-        avg_acc = np.mean([users_rnn_acc[x] for x in users_rnn_acc])
+        avg_acc_r1 = np.mean([users_rnn_acc_r1[x] for x in users_rnn_acc_r1])
+        avg_acc_r5 = np.mean([users_rnn_acc_r5[x] for x in users_rnn_acc_r5])
+        avg_acc_r10 = np.mean([users_rnn_acc_r10[x] for x in users_rnn_acc_r10])
         avg_map = np.mean([users_rnn_map[x] for x in users_rnn_map])
-        return avg_loss, avg_acc, avg_map, users_rnn_acc
+        return avg_loss, avg_acc_r1, avg_acc_r5, avg_acc_r10, avg_map, users_rnn_acc_r1
 
 
 def markov(parameters, candidate):

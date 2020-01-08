@@ -101,12 +101,12 @@ def run(args):
             print('==>Train Epoch:{:0>2d} Loss:{:.4f} lr:{}'.format(epoch, avg_loss, lr))
             metrics['train_loss'].append(avg_loss)
 
-        avg_loss, avg_acc, avg_map, users_acc = run_simple(data_test, test_idx, 'test', lr, parameters.clip, model,
+        avg_loss, avg_acc_r1, avg_acc_r5, avg_acc_r10, avg_map, users_acc = run_simple(data_test, test_idx, 'test', lr, parameters.clip, model,
                                                   optimizer, criterion, args.device, parameters.model_mode)
-        print('==>Test recall@1:{:.8f}, Map:{:.8f}, Loss:{:.8f}'.format(avg_acc, avg_map, avg_loss))
+        print('==>Test recall@1:{:.8f}, recall@5:{:.8f}, recall@10:{:.8f}, Map:{:.8f}, Loss:{:.8f}'.format(avg_acc_r1, avg_acc_r5, avg_acc_r10, avg_map, avg_loss))
 
         metrics['valid_loss'].append(avg_loss)
-        metrics['accuracy'].append(avg_acc)
+        metrics['accuracy'].append(avg_acc_r1)
         metrics['valid_acc'][epoch] = users_acc
 
         save_name_tmp = 'ep_' + str(epoch) + '.m'
